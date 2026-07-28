@@ -7,7 +7,7 @@ Coordinate guiding tool build for the [Heltec Wireless Tracker V2](https://helte
 
 ## Information
 
-<img width="3432" height="1660" alt="IMG_9942" src="https://github.com/user-attachments/assets/10f13efe-fb09-474c-9fc7-2d3a3f50e8ff" />
+<img width="3432" height="1660" alt="image" src="https://github.com/user-attachments/assets/9fefaa50-0cd6-4eec-8646-fa71baa4256b" />
 
 The text on the third row is your distance and bearings (145d = 145 degrees) to the coordinates, since the development board lacks a electronic compass, you must be facing north for it to accurate.
 
