@@ -27,20 +27,28 @@ Target targets[] = {
 const int totalTargets = sizeof(targets) / sizeof(targets[0]);
 int currentTargetIndex = 0;
 
+// Tab managment
+int currentScreen = 0; 
+
 bool lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50; 
 
+// Long press config
+unsigned long pressStartTime = 0;
+bool buttonIsPressed = false;
+const unsigned long longPressTime = 750; 
+
 // Double click config
 unsigned long lastClickTime = 0;
-const unsigned long doubleClickWindow = 400; // Max time in ms between clicks for a double click
+const unsigned long doubleClickWindow = 400; 
 bool waitingForDoubleClick = false;
 
 unsigned long lastDisplayUpdate = 0;
-const unsigned long displayInterval = 150; // Display update interval
+const unsigned long displayInterval = 150; 
 
 unsigned long lastBatteryCheck = 0;
-const unsigned long batteryInterval = 10000; // Battery update interval
+const unsigned long batteryInterval = 10000; 
 int cachedBatteryPct = 0;
 float cachedVoltage = 0.0;
 
@@ -48,66 +56,111 @@ String lastDate = "";
 String lastTime = "";
 String lastInfo = "";
 String lastSpeed = "";
+String lastAltitude = "";
 String lastTargetID = "";
 int lastSatellites = -1;
 String lastBatteryStr = "";
 
+// Track previous values for tab 1 to prevent flashing
+String lastLatStr = "";
+String lastLonStr = "";
+String lastScreenSpeed = "";
+String lastScreenAltitude = "";
+
 bool forceNavigationUpdate = true;
 bool forceSpeedUpdate = true;
+bool forceAltitudeUpdate = true;
 bool forceIDUpdate = true;
+bool forceCoordUpdate = true;
 
 void checkButton()
 {
-    static int lastReading = HIGH;
     int buttonState = digitalRead(BUTTON_PIN);
+    unsigned long now = millis();
 
-    if (buttonState != lastReading) {
-        lastDebounceTime = millis();
+    if (buttonState != lastButtonState) {
+        lastDebounceTime = now;
     }
 
-    if ((millis() - lastDebounceTime) > debounceDelay) {
-        if (buttonState == LOW && lastButtonState == HIGH) {
-            unsigned long now = millis();
-            
-            if (waitingForDoubleClick && (now - lastClickTime <= doubleClickWindow)) {
-                // Double-click detected: go back 1 ID
-                currentTargetIndex--;
-                if (currentTargetIndex < 0) {
-                    currentTargetIndex = totalTargets - 1;
-                }
+    if ((now - lastDebounceTime) > debounceDelay) {
+        if (buttonState == LOW && !buttonIsPressed) {
+            buttonIsPressed = true;
+            pressStartTime = now;
+        }
+        else if (buttonState == HIGH && buttonIsPressed) {
+            buttonIsPressed = false;
+            unsigned long pressDuration = now - pressStartTime;
 
-                Serial.print("Double-click detected, switched back to coordinate: ");
-                Serial.println(currentTargetIndex + 1);
-
-                waitingForDoubleClick = false;
+            if (pressDuration >= longPressTime) {
+                currentScreen = (currentScreen == 0) ? 1 : 0;
+                st7735.st7735_fill_screen(ST7735_BLACK);
                 
-                forceNavigationUpdate = true;
-                forceSpeedUpdate = true;
-                forceIDUpdate = true;
-            } else {
-                // First click registered, start timer to check for double click
-                lastClickTime = now;
-                waitingForDoubleClick = true;
+                Serial.print("Switched to tab: ");
+                Serial.println(currentScreen);
+                
+                // Force immediate refresh when changing tab
+                lastDate = "";
+                lastTime = "";
+                lastBatteryStr = "";
+                lastSatellites = -1;
+                lastLatStr = "";
+                lastLonStr = "";
+                lastScreenSpeed = "";
+                lastScreenAltitude = "";
+                lastBatteryCheck = 0; // Force battery check on tab switch
+
+                // If switching back to tab 0, force ID and nav refresh
+                if (currentScreen == 0) {
+                    forceNavigationUpdate = true;
+                    forceSpeedUpdate = true;
+                    forceAltitudeUpdate = true;
+                    forceIDUpdate = true;
+                    lastTargetID = ""; // Clear last target ID to force redraw
+                } else {
+                    forceCoordUpdate = true;
+                }
+            } 
+            else {
+                if (currentScreen == 0) {
+                    if (waitingForDoubleClick && (now - lastClickTime <= doubleClickWindow)) {
+                        currentTargetIndex--;
+                        if (currentTargetIndex < 0) {
+                            currentTargetIndex = totalTargets - 1;
+                        }
+
+                        Serial.print("Double click detected, switched back to coordinate: ");
+                        Serial.println(currentTargetIndex + 1);
+
+                        waitingForDoubleClick = false;
+                        
+                        forceNavigationUpdate = true;
+                        forceSpeedUpdate = true;
+                        forceAltitudeUpdate = true;
+                        forceIDUpdate = true;
+                    } else {
+                        lastClickTime = now;
+                        waitingForDoubleClick = true;
+                    }
+                }
             }
         }
-        lastButtonState = buttonState;
     }
-    lastReading = buttonState;
+    lastButtonState = buttonState;
 
-    // If the double click window expires without a second click, treat it as a single click
-    if (waitingForDoubleClick && (millis() - lastClickTime > doubleClickWindow)) {
+    if (currentScreen == 0 && waitingForDoubleClick && (millis() - lastClickTime > doubleClickWindow)) {
         currentTargetIndex++;
         if (currentTargetIndex >= totalTargets) {
             currentTargetIndex = 0;
         }
 
-        Serial.print("Single-click processed, switched to coordinate: ");
+        Serial.print("Single click detected, switched to coordinate: ");
         Serial.println(currentTargetIndex + 1);
 
         waitingForDoubleClick = false;
 
         forceNavigationUpdate = true;
         forceSpeedUpdate = true;
+        forceAltitudeUpdate = true;
         forceIDUpdate = true;
     }
 }
@@ -116,26 +169,24 @@ void getBatteryReading(int &percentage, float &voltage)
 {
 #ifdef ADC_CTRL
     pinMode(ADC_CTRL, OUTPUT);
-    digitalWrite(ADC_CTRL, HIGH); // Enable voltage divider
+    digitalWrite(ADC_CTRL, HIGH); 
     delay(10);
 #endif
 
     int rawValue = analogRead(BATTERY_PIN);
 
 #ifdef ADC_CTRL
-    digitalWrite(ADC_CTRL, LOW); // Disable voltage divider to save power
+    digitalWrite(ADC_CTRL, LOW); 
 #endif
 
-    // Convert ADC to voltage
     voltage = (rawValue / 4095.0) * 3.3 * ADC_MULTIPLIER;
-
-    // Estimate percentage
     percentage = (int)((voltage - 3.3) / (4.2 - 3.3) * 100.0);
     if (percentage > 100) percentage = 100;
     if (percentage < 0) percentage = 0;
 }
 
-void updateDisplay()
+// Tab 1
+void updateNavigationScreen()
 {
     // Date
     if (GPS.date.isValid()) {
@@ -145,7 +196,19 @@ void updateDisplay()
 
         if (currentDate != lastDate) {
             lastDate = currentDate;
-            st7735.st7735_write_str(0, 0, currentDate, Font_7x10, ST7735_YELLOW, ST7735_BLACK);
+            st7735.st7735_write_str(0, 0, currentDate, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+        }
+    }
+
+    // Time
+    if (GPS.time.isValid()) {
+        char time_buf[20];
+        sprintf(time_buf, "%02d:%02d:%02dZ", GPS.time.hour(), GPS.time.minute(), GPS.time.second());
+        String currentTime = String(time_buf);
+
+        if (currentTime != lastTime) {
+            lastTime = currentTime;
+            st7735.st7735_write_str(91, 0, currentTime, Font_7x10, ST7735_WHITE, ST7735_BLACK);
         }
     }
 
@@ -160,7 +223,7 @@ void updateDisplay()
 
         if (currentBatteryStr != lastBatteryStr) {
             lastBatteryStr = currentBatteryStr;
-            st7735.st7735_write_str(97, 0, currentBatteryStr, Font_7x10, ST7735_MAGENTA, ST7735_BLACK);
+            st7735.st7735_write_str(0, 12, currentBatteryStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
         }
     }
 
@@ -173,18 +236,6 @@ void updateDisplay()
         String satStr = String(sat_buf);
         
         st7735.st7735_write_str(105, 12, satStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
-    }
-
-    // Time
-    if (GPS.time.isValid()) {
-        char time_buf[20];
-        sprintf(time_buf, "%02d:%02d:%02d UTC", GPS.time.hour(), GPS.time.minute(), GPS.time.second());
-        String currentTime = String(time_buf);
-
-        if (currentTime != lastTime) {
-            lastTime = currentTime;
-            st7735.st7735_write_str(0, 12, currentTime, Font_7x10, ST7735_CYAN, ST7735_BLACK);
-        }
     }
 
     // Distance and bearings
@@ -221,17 +272,38 @@ void updateDisplay()
         }
 
         // Speed
-        String currentSpeed = String(GPS.speed.mph(), 1) + " mph";
+        float speedMph = GPS.speed.mph();
+        float speedKmph = GPS.speed.kmph();
+        String speedMphStr = String(speedMph, 1);
+        String speedKmphStr = String(speedKmph, 1);
+        
+        String currentSpeed = speedKmphStr + "kph / " + speedMphStr + "mph";
 
         if (currentSpeed != lastSpeed || forceSpeedUpdate) {
             lastSpeed = currentSpeed;
             forceSpeedUpdate = false;
 
-            while (currentSpeed.length() < 10) {
+            while (currentSpeed.length() < 15) {
                 currentSpeed += " ";
             }
 
-            st7735.st7735_write_str(0, 52, currentSpeed, Font_11x18, ST7735_WHITE, ST7735_BLACK);
+            st7735.st7735_write_str(0, 52, currentSpeed, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+        }
+
+        // Altitude
+        double altMeters = GPS.altitude.meters();
+        double altFeet = altMeters * 3.28084;
+        String currentAltitude = String((int)altMeters) + "m / " + String((int)altFeet) + "ft";
+
+        if (currentAltitude != lastAltitude || forceAltitudeUpdate) {
+            lastAltitude = currentAltitude;
+            forceAltitudeUpdate = false;
+
+            while (currentAltitude.length() < 18) {
+                currentAltitude += " ";
+            }
+
+            st7735.st7735_write_str(0, 64, currentAltitude, Font_7x10, ST7735_WHITE, ST7735_BLACK);
         }
 
         // Coordinates ID
@@ -241,11 +313,11 @@ void updateDisplay()
             lastTargetID = currentID;
             forceIDUpdate = false;
 
-            while (currentID.length() < 2) {
+            while (currentID.length() < 3) {
                 currentID += " ";
             }
 
-            st7735.st7735_write_str(135, 52, currentID, Font_11x18, ST7735_RED, ST7735_BLACK);
+            st7735.st7735_write_str(135, 52, currentID, Font_11x18, ST7735_YELLOW, ST7735_BLACK);
         }
 
     } else {
@@ -254,8 +326,103 @@ void updateDisplay()
             lastInfo = acquiringStr;
             forceNavigationUpdate = false;
 
-            st7735.st7735_write_str(0, 28, acquiringStr, Font_11x18, ST7735_MAGENTA, ST7735_BLACK);
+            st7735.st7735_write_str(0, 28, acquiringStr, Font_11x18, ST7735_CYAN, ST7735_BLACK);
         }
+    }
+}
+
+// Tab 2
+void updateCoordinatesScreen()
+{
+    // Keep Top 2 rows from the original page
+    if (GPS.date.isValid()) {
+        char date_buf[16];
+        sprintf(date_buf, "%02d/%02d/%04d", GPS.date.day(), GPS.date.month(), GPS.date.year());
+        String currentDate = String(date_buf);
+        if (currentDate != lastDate || forceCoordUpdate) {
+            lastDate = currentDate;
+            st7735.st7735_write_str(0, 0, currentDate, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+        }
+    }
+
+    if (GPS.time.isValid()) {
+        char time_buf[20];
+        sprintf(time_buf, "%02d:%02d:%02dZ", GPS.time.hour(), GPS.time.minute(), GPS.time.second());
+        String currentTime = String(time_buf);
+        if (currentTime != lastTime || forceCoordUpdate) {
+            lastTime = currentTime;
+            st7735.st7735_write_str(91, 0, currentTime, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+        }
+    }
+
+    if (millis() - lastBatteryCheck >= batteryInterval || lastBatteryCheck == 0 || forceCoordUpdate) {
+        lastBatteryCheck = millis();
+        getBatteryReading(cachedBatteryPct, cachedVoltage);
+        char bat_buf[16];
+        sprintf(bat_buf, "%d%% %.1fV", cachedBatteryPct, cachedVoltage);
+        lastBatteryStr = String(bat_buf);
+        st7735.st7735_write_str(0, 12, lastBatteryStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+    }
+
+    int currentSatellites = GPS.satellites.value();
+    if (currentSatellites != lastSatellites || GPS.satellites.isUpdated() || forceCoordUpdate) {
+        lastSatellites = currentSatellites;
+        char sat_buf[12];
+        sprintf(sat_buf, "%02d Sats", currentSatellites);
+        st7735.st7735_write_str(105, 12, String(sat_buf), Font_7x10, ST7735_WHITE, ST7735_BLACK);
+    }
+
+    // Display coordinates if avilable, else show acquiring message
+    String currentLatStr, currentLonStr;
+    if (GPS.location.isValid()) {
+        currentLatStr = "LAT: " + String(GPS.location.lat(), 5);
+        currentLonStr = "LON: " + String(GPS.location.lng(), 5);
+    } else {
+        currentLatStr = "LAT: Acquiring...";
+        currentLonStr = "LON: Acquiring...";
+    }
+
+    if (currentLatStr != lastLatStr || forceCoordUpdate || GPS.location.isUpdated()) {
+        lastLatStr = currentLatStr;
+        while (currentLatStr.length() < 22) currentLatStr += " ";
+        st7735.st7735_write_str(0, 28, currentLatStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+    }
+
+    if (currentLonStr != lastLonStr || forceCoordUpdate || GPS.location.isUpdated()) {
+        lastLonStr = currentLonStr;
+        while (currentLonStr.length() < 22) currentLonStr += " ";
+        st7735.st7735_write_str(0, 40, currentLonStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+    }
+
+    // Speed and altitude
+    float speedMph = GPS.speed.mph();
+    float speedKmph = GPS.speed.kmph();
+    String currentSpeed = String(speedKmph, 1) + "kph / " + String(speedMph, 1) + "mph";
+
+    if (currentSpeed != lastScreenSpeed || forceCoordUpdate || GPS.speed.isUpdated()) {
+        lastScreenSpeed = currentSpeed;
+        while (currentSpeed.length() < 18) currentSpeed += " ";
+        st7735.st7735_write_str(0, 52, currentSpeed, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+    }
+
+    double altMeters = GPS.altitude.meters();
+    double altFeet = altMeters * 3.28084;
+    String currentAltitude = String((int)altMeters) + "m / " + String((int)altFeet) + "ft";
+
+    if (currentAltitude != lastScreenAltitude || forceCoordUpdate || GPS.altitude.isUpdated()) {
+        lastScreenAltitude = currentAltitude;
+        while (currentAltitude.length() < 18) currentAltitude += " ";
+        st7735.st7735_write_str(0, 64, currentAltitude, Font_7x10, ST7735_WHITE, ST7735_BLACK);
+        forceCoordUpdate = false; 
+    }
+}
+
+void updateDisplay()
+{
+    if (currentScreen == 0) {
+        updateNavigationScreen();
+    } else {
+        updateCoordinatesScreen();
     }
 }
 
@@ -274,7 +441,7 @@ void GPS_test()
 
     st7735.st7735_fill_screen(ST7735_BLACK);
 
-    st7735.st7735_write_str(0, 0, "GPS Init", Font_11x18, ST7735_WHITE, ST7735_BLACK);
+    st7735.st7735_write_str(0, 0, "GPS Init", Font_16x26, ST7735_WHITE, ST7735_BLACK);
     delay(500);
     st7735.st7735_fill_screen(ST7735_BLACK);
 
