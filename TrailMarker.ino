@@ -1,3 +1,5 @@
+// Tested on Heltec Wireless Tracker V2.3
+
 #include "Arduino.h"
 #include "HT_st7735.h"
 #include "HT_TinyGPS++.h"
@@ -13,6 +15,16 @@ HT_st7735 st7735;
 #define ADC_MULTIPLIER (4.9 * 1.045)
 #define ADC_CTRL 2     
 
+// Backlight off pin
+#ifndef ST7735_LED_K_Pin
+#define ST7735_LED_K_Pin 21
+#endif
+
+// Screen sleep config
+bool displayIsOn = true;
+unsigned long lastActivityTime = 0;
+const unsigned long screenTimeout = 180000; // 5 seconds timeout
+
 struct Target {
     double lat;
     double lng;
@@ -20,8 +32,8 @@ struct Target {
 
 // Coordinates array
 Target targets[] = {
-    {0.0, 0.0},
-    {0.0, 180.0},
+    {0, 0},
+    {0, 180),
 };
 
 const int totalTargets = sizeof(targets) / sizeof(targets[0]);
@@ -37,7 +49,7 @@ const unsigned long debounceDelay = 50;
 // Long press config
 unsigned long pressStartTime = 0;
 bool buttonIsPressed = false;
-const unsigned long longPressTime = 750; 
+const unsigned long longPressTime = 500; 
 
 // Double click config
 unsigned long lastClickTime = 0;
@@ -73,6 +85,44 @@ bool forceAltitudeUpdate = true;
 bool forceIDUpdate = true;
 bool forceCoordUpdate = true;
 
+void wakeUpScreen() {
+    displayIsOn = true;
+    lastActivityTime = millis();
+    
+    // Turn backlight back ON
+    digitalWrite(ST7735_LED_K_Pin, HIGH);
+    
+    // Force a full refresh of the current screen to restore contents immediately
+    st7735.st7735_fill_screen(ST7735_BLACK);
+    lastDate = "";
+    lastTime = "";
+    lastBatteryStr = "";
+    lastSatellites = -1;
+    lastLatStr = "";
+    lastLonStr = "";
+    lastScreenSpeed = "";
+    lastScreenAltitude = "";
+    lastTargetID = "";
+    lastInfo = "";
+    lastBatteryCheck = 0;
+
+    if (currentScreen == 0) {
+        forceNavigationUpdate = true;
+        forceSpeedUpdate = true;
+        forceAltitudeUpdate = true;
+        forceIDUpdate = true;
+    } else {
+        forceCoordUpdate = true;
+    }
+}
+
+void sleepScreen() {
+    displayIsOn = false;
+    st7735.st7735_fill_screen(ST7735_BLACK); // Clear buffer content
+    // Turn off backlight
+    digitalWrite(ST7735_LED_K_Pin, LOW);
+}
+
 void checkButton()
 {
     int buttonState = digitalRead(BUTTON_PIN);
@@ -91,6 +141,16 @@ void checkButton()
             buttonIsPressed = false;
             unsigned long pressDuration = now - pressStartTime;
 
+            // Check if screen was off, this button press only wakes it up and resets sleep timer
+            if (!displayIsOn) {
+                wakeUpScreen();
+                lastButtonState = buttonState;
+                return;
+            }
+
+            // Screen is on, register activity
+            lastActivityTime = now;
+
             if (pressDuration >= longPressTime) {
                 currentScreen = (currentScreen == 0) ? 1 : 0;
                 st7735.st7735_fill_screen(ST7735_BLACK);
@@ -98,7 +158,6 @@ void checkButton()
                 Serial.print("Switched to tab: ");
                 Serial.println(currentScreen);
                 
-                // Force immediate refresh when changing tab
                 lastDate = "";
                 lastTime = "";
                 lastBatteryStr = "";
@@ -107,15 +166,14 @@ void checkButton()
                 lastLonStr = "";
                 lastScreenSpeed = "";
                 lastScreenAltitude = "";
-                lastBatteryCheck = 0; // Force battery check on tab switch
+                lastBatteryCheck = 0; 
 
-                // If switching back to tab 0, force ID and nav refresh
                 if (currentScreen == 0) {
                     forceNavigationUpdate = true;
                     forceSpeedUpdate = true;
                     forceAltitudeUpdate = true;
                     forceIDUpdate = true;
-                    lastTargetID = ""; // Clear last target ID to force redraw
+                    lastTargetID = ""; 
                 } else {
                     forceCoordUpdate = true;
                 }
@@ -147,7 +205,7 @@ void checkButton()
     }
     lastButtonState = buttonState;
 
-    if (currentScreen == 0 && waitingForDoubleClick && (millis() - lastClickTime > doubleClickWindow)) {
+    if (displayIsOn && currentScreen == 0 && waitingForDoubleClick && (millis() - lastClickTime > doubleClickWindow)) {
         currentTargetIndex++;
         if (currentTargetIndex >= totalTargets) {
             currentTargetIndex = 0;
@@ -188,7 +246,6 @@ void getBatteryReading(int &percentage, float &voltage)
 // Tab 1
 void updateNavigationScreen()
 {
-    // Date
     if (GPS.date.isValid()) {
         char date_buf[16];
         sprintf(date_buf, "%02d/%02d/%04d", GPS.date.day(), GPS.date.month(), GPS.date.year());
@@ -200,7 +257,6 @@ void updateNavigationScreen()
         }
     }
 
-    // Time
     if (GPS.time.isValid()) {
         char time_buf[20];
         sprintf(time_buf, "%02d:%02d:%02dZ", GPS.time.hour(), GPS.time.minute(), GPS.time.second());
@@ -212,7 +268,6 @@ void updateNavigationScreen()
         }
     }
 
-    // Battery
     if (millis() - lastBatteryCheck >= batteryInterval || lastBatteryCheck == 0) {
         lastBatteryCheck = millis();
         getBatteryReading(cachedBatteryPct, cachedVoltage);
@@ -227,7 +282,6 @@ void updateNavigationScreen()
         }
     }
 
-    // Satellites
     int currentSatellites = GPS.satellites.value();
     if (currentSatellites != lastSatellites || GPS.satellites.isUpdated()) {
         lastSatellites = currentSatellites;
@@ -238,7 +292,6 @@ void updateNavigationScreen()
         st7735.st7735_write_str(105, 12, satStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
     }
 
-    // Distance and bearings
     if (GPS.location.isValid()) {
         double targetLat = targets[currentTargetIndex].lat;
         double targetLng = targets[currentTargetIndex].lng;
@@ -271,7 +324,6 @@ void updateNavigationScreen()
             st7735.st7735_write_str(0, 28, currentInfo, Font_11x18, ST7735_GREEN, ST7735_BLACK);
         }
 
-        // Speed
         float speedMph = GPS.speed.mph();
         float speedKmph = GPS.speed.kmph();
         String speedMphStr = String(speedMph, 1);
@@ -290,7 +342,6 @@ void updateNavigationScreen()
             st7735.st7735_write_str(0, 52, currentSpeed, Font_7x10, ST7735_WHITE, ST7735_BLACK);
         }
 
-        // Altitude
         double altMeters = GPS.altitude.meters();
         double altFeet = altMeters * 3.28084;
         String currentAltitude = String((int)altMeters) + "m / " + String((int)altFeet) + "ft";
@@ -306,7 +357,6 @@ void updateNavigationScreen()
             st7735.st7735_write_str(0, 64, currentAltitude, Font_7x10, ST7735_WHITE, ST7735_BLACK);
         }
 
-        // Coordinates ID
         String currentID = String(currentTargetIndex + 1);
 
         if (currentID != lastTargetID || forceIDUpdate) {
@@ -334,7 +384,6 @@ void updateNavigationScreen()
 // Tab 2
 void updateCoordinatesScreen()
 {
-    // Keep Top 2 rows from the original page
     if (GPS.date.isValid()) {
         char date_buf[16];
         sprintf(date_buf, "%02d/%02d/%04d", GPS.date.day(), GPS.date.month(), GPS.date.year());
@@ -372,7 +421,6 @@ void updateCoordinatesScreen()
         st7735.st7735_write_str(105, 12, String(sat_buf), Font_7x10, ST7735_WHITE, ST7735_BLACK);
     }
 
-    // Display coordinates if avilable, else show acquiring message
     String currentLatStr, currentLonStr;
     if (GPS.location.isValid()) {
         currentLatStr = "LAT: " + String(GPS.location.lat(), 5);
@@ -394,7 +442,6 @@ void updateCoordinatesScreen()
         st7735.st7735_write_str(0, 40, currentLonStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
     }
 
-    // Speed and altitude
     float speedMph = GPS.speed.mph();
     float speedKmph = GPS.speed.kmph();
     String currentSpeed = String(speedKmph, 1) + "kph / " + String(speedMph, 1) + "mph";
@@ -419,6 +466,17 @@ void updateCoordinatesScreen()
 
 void updateDisplay()
 {
+    // Check for display timeout
+    if (displayIsOn && (millis() - lastActivityTime >= screenTimeout)) {
+        sleepScreen();
+        return;
+    }
+
+    // Do not update pixels if screen is off
+    if (!displayIsOn) {
+        return;
+    }
+
     if (currentScreen == 0) {
         updateNavigationScreen();
     } else {
@@ -433,17 +491,24 @@ void GPS_test()
 
     pinMode(BUTTON_PIN, INPUT);
 
+    // Init display backlight control pin as output and turn it on
+    pinMode(ST7735_LED_K_Pin, OUTPUT);
+    digitalWrite(ST7735_LED_K_Pin, HIGH);
+
     pinMode(BATTERY_PIN, INPUT);
     analogSetPinAttenuation(BATTERY_PIN, ADC_ATTENUATION);
 
     Serial1.begin(115200, SERIAL_8N1, 33, 34);
     Serial.println("Started");
 
+    st7735.st7735_init();
     st7735.st7735_fill_screen(ST7735_BLACK);
 
     st7735.st7735_write_str(0, 0, "GPS Init", Font_16x26, ST7735_WHITE, ST7735_BLACK);
     delay(500);
     st7735.st7735_fill_screen(ST7735_BLACK);
+
+    lastActivityTime = millis(); // Init timeout tracker
 
     while (1)
     {
