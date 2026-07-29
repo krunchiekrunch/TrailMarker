@@ -33,7 +33,7 @@ struct Target {
 // Coordinates array
 Target targets[] = {
     {0, 0},
-    {0, 180),
+    {0, 180},
 };
 
 const int totalTargets = sizeof(targets) / sizeof(targets[0]);
@@ -158,6 +158,7 @@ void checkButton()
                 Serial.print("Switched to tab: ");
                 Serial.println(currentScreen);
                 
+                // Force immediate refresh when changing tab
                 lastDate = "";
                 lastTime = "";
                 lastBatteryStr = "";
@@ -166,14 +167,15 @@ void checkButton()
                 lastLonStr = "";
                 lastScreenSpeed = "";
                 lastScreenAltitude = "";
-                lastBatteryCheck = 0; 
+                lastBatteryCheck = 0; // Force battery check on tab switch
 
+                // If switching back to tab 0, force ID and nav refresh
                 if (currentScreen == 0) {
                     forceNavigationUpdate = true;
                     forceSpeedUpdate = true;
                     forceAltitudeUpdate = true;
                     forceIDUpdate = true;
-                    lastTargetID = ""; 
+                    lastTargetID = ""; // Clear last target ID to force redraw
                 } else {
                     forceCoordUpdate = true;
                 }
@@ -246,6 +248,7 @@ void getBatteryReading(int &percentage, float &voltage)
 // Tab 1
 void updateNavigationScreen()
 {
+    // Date
     if (GPS.date.isValid()) {
         char date_buf[16];
         sprintf(date_buf, "%02d/%02d/%04d", GPS.date.day(), GPS.date.month(), GPS.date.year());
@@ -257,6 +260,7 @@ void updateNavigationScreen()
         }
     }
 
+    // Time
     if (GPS.time.isValid()) {
         char time_buf[20];
         sprintf(time_buf, "%02d:%02d:%02dZ", GPS.time.hour(), GPS.time.minute(), GPS.time.second());
@@ -268,6 +272,7 @@ void updateNavigationScreen()
         }
     }
 
+    // Battery
     if (millis() - lastBatteryCheck >= batteryInterval || lastBatteryCheck == 0) {
         lastBatteryCheck = millis();
         getBatteryReading(cachedBatteryPct, cachedVoltage);
@@ -282,6 +287,7 @@ void updateNavigationScreen()
         }
     }
 
+    // Satellites
     int currentSatellites = GPS.satellites.value();
     if (currentSatellites != lastSatellites || GPS.satellites.isUpdated()) {
         lastSatellites = currentSatellites;
@@ -292,6 +298,7 @@ void updateNavigationScreen()
         st7735.st7735_write_str(105, 12, satStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
     }
 
+    // Distance and bearings
     if (GPS.location.isValid()) {
         double targetLat = targets[currentTargetIndex].lat;
         double targetLng = targets[currentTargetIndex].lng;
@@ -324,6 +331,7 @@ void updateNavigationScreen()
             st7735.st7735_write_str(0, 28, currentInfo, Font_11x18, ST7735_GREEN, ST7735_BLACK);
         }
 
+        // Speed
         float speedMph = GPS.speed.mph();
         float speedKmph = GPS.speed.kmph();
         String speedMphStr = String(speedMph, 1);
@@ -342,6 +350,7 @@ void updateNavigationScreen()
             st7735.st7735_write_str(0, 52, currentSpeed, Font_7x10, ST7735_WHITE, ST7735_BLACK);
         }
 
+        // Altitude
         double altMeters = GPS.altitude.meters();
         double altFeet = altMeters * 3.28084;
         String currentAltitude = String((int)altMeters) + "m / " + String((int)altFeet) + "ft";
@@ -357,6 +366,7 @@ void updateNavigationScreen()
             st7735.st7735_write_str(0, 64, currentAltitude, Font_7x10, ST7735_WHITE, ST7735_BLACK);
         }
 
+        // Coordinates ID
         String currentID = String(currentTargetIndex + 1);
 
         if (currentID != lastTargetID || forceIDUpdate) {
@@ -384,6 +394,7 @@ void updateNavigationScreen()
 // Tab 2
 void updateCoordinatesScreen()
 {
+    // Keep Top 2 rows from the original page
     if (GPS.date.isValid()) {
         char date_buf[16];
         sprintf(date_buf, "%02d/%02d/%04d", GPS.date.day(), GPS.date.month(), GPS.date.year());
@@ -421,13 +432,14 @@ void updateCoordinatesScreen()
         st7735.st7735_write_str(105, 12, String(sat_buf), Font_7x10, ST7735_WHITE, ST7735_BLACK);
     }
 
+    // Display coordinates if avilable, else show acquiring message
     String currentLatStr, currentLonStr;
     if (GPS.location.isValid()) {
         currentLatStr = "LAT: " + String(GPS.location.lat(), 5);
         currentLonStr = "LON: " + String(GPS.location.lng(), 5);
     } else {
-        currentLatStr = "LAT: Acquiring...";
-        currentLonStr = "LON: Acquiring...";
+        currentLatStr = "LAT: Move somewhere";
+        currentLonStr = "LON: open and wait.";
     }
 
     if (currentLatStr != lastLatStr || forceCoordUpdate || GPS.location.isUpdated()) {
@@ -442,6 +454,7 @@ void updateCoordinatesScreen()
         st7735.st7735_write_str(0, 40, currentLonStr, Font_7x10, ST7735_WHITE, ST7735_BLACK);
     }
 
+    // Speed and altitude
     float speedMph = GPS.speed.mph();
     float speedKmph = GPS.speed.kmph();
     String currentSpeed = String(speedKmph, 1) + "kph / " + String(speedMph, 1) + "mph";
